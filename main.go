@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"sort"
-	"sync"
 
 	"github.com/rodaine/table"
 )
@@ -23,38 +22,17 @@ type Event struct {
 }
 
 type EventLogger struct {
-	Done     <-chan bool
-	Events   chan Event
 	EventLog []Event
 	Logger   *slog.Logger
-	Wg       *sync.WaitGroup
 }
 
 func (l *EventLogger) Log(e Event) {
-	l.Events <- e
-}
-
-func (l *EventLogger) Consume() {
-	logger := l.Logger.With("EventLogger", "consumer")
-	l.Wg.Add(1)
-	go func() {
-		defer l.Wg.Done()
-		for {
-			select {
-			case <-l.Done:
-				logger.Warn("done")
-				return
-			case e := <-l.Events:
-				logger.Debug("received event")
-				l.EventLog = append(l.EventLog, e)
-			}
-		}
-	}()
+	l.Logger.Debug("received event")
+	l.EventLog = append(l.EventLog, e)
 }
 
 type Node struct {
 	Clock       int
-	Done        <-chan bool
 	EventLogger *EventLogger
 	Id          int
 	Lamport     bool
@@ -67,27 +45,24 @@ func (n *Node) Receive(m Message) {
 	}
 	n.Clock++
 
-	clock := n.Clock
-
 	n.EventLogger.Log(Event{
-		Clock:   clock,
+		Clock:   n.Clock,
 		Message: m,
 	})
 }
 
-func (n *Node) Produce(dest *Node, absoluteId int) {
-	logger := n.Logger.With("node", n.Id, "producer", true, "absolute id", absoluteId)
+func (n *Node) Send(dest *Node, absoluteId int) {
+	logger := n.Logger.With("node", n.Id, "absolute id", absoluteId)
 
 	n.Clock++
-	clock := n.Clock
 
 	m := Message{
 		AbsoluteId: absoluteId,
-		Clock:      clock,
+		Clock:      n.Clock,
 		SenderId:   n.Id,
 	}
 	dest.Receive(m)
-	logger.Debug("sent", "absoluteId", m.AbsoluteId)
+	logger.Debug("sent")
 }
 
 func InitLogger() *slog.Logger {
@@ -99,22 +74,13 @@ func InitLogger() *slog.Logger {
 
 func Run(lamport bool) {
 	logger := InitLogger()
-	done := make(chan bool)
-	var wg sync.WaitGroup
 
-	eventLogger := EventLogger{
-		Done:   done,
-		Events: make(chan Event),
-		Logger: logger,
-		Wg:     &wg,
-	}
-	eventLogger.Consume()
+	eventLogger := EventLogger{Logger: logger}
 
 	var nodes []*Node
 
 	for i := 0; i < 3; i++ {
 		n := &Node{
-			Done:        done,
 			EventLogger: &eventLogger,
 			Id:          i,
 			Lamport:     lamport,
@@ -125,19 +91,16 @@ func Run(lamport bool) {
 
 	// node0 sends msg to node2 with clock skewed into the future
 	nodes[0].Clock = 10
-	nodes[0].Produce(nodes[2], 1)
+	nodes[0].Send(nodes[2], 1)
 
 	// node2 sends msg to node1
-	nodes[2].Produce(nodes[1], 2)
+	nodes[2].Send(nodes[1], 2)
 
 	// node1 sends msg to node0.
-	nodes[1].Produce(nodes[0], 3)
+	nodes[1].Send(nodes[0], 3)
 
 	// we created a graph of causality: node0 causes an event on node2, which causes an event on node1, which causes an event on node0
 	// the order of the events is important, because the content of the messages could depend on state changed by receipt of previous message
-
-	close(done)
-	wg.Wait()
 
 	sort.Slice(eventLogger.EventLog, func(i, j int) bool {
 		return eventLogger.EventLog[i].Message.AbsoluteId < eventLogger.EventLog[j].Message.AbsoluteId
