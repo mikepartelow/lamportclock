@@ -1,2 +1,3 @@
 all:
+	go test -race ./...
 	go run -race main.go

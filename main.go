@@ -46,8 +46,9 @@ func (n *Node) Receive(m Message) {
 	n.Clock++
 
 	n.EventLogger.Log(Event{
-		Clock:   n.Clock,
-		Message: m,
+		Clock:      n.Clock,
+		Message:    m,
+		ReceiverId: n.Id,
 	})
 }
 
@@ -72,7 +73,7 @@ func InitLogger() *slog.Logger {
 	return logger
 }
 
-func Run(lamport bool) {
+func Run(lamport bool) ([]Event, error) {
 	logger := InitLogger()
 
 	eventLogger := EventLogger{Logger: logger}
@@ -106,9 +107,13 @@ func Run(lamport bool) {
 		return eventLogger.EventLog[i].Message.AbsoluteId < eventLogger.EventLog[j].Message.AbsoluteId
 	})
 
+	return eventLogger.EventLog, nil
+}
+
+func PrintEvents(events []Event, lamport bool) {
 	tbl := table.New("AbsoluteId", "SenderId", "producer.Clock", "event.Clock")
 
-	for _, e := range eventLogger.EventLog {
+	for _, e := range events {
 		tbl.AddRow(e.Message.AbsoluteId, e.Message.SenderId, e.Message.Clock, e.Clock)
 	}
 
@@ -118,6 +123,11 @@ func Run(lamport bool) {
 }
 
 func main() {
-	Run(false)
-	Run(true)
+	for _, lamport := range []bool{false, true} {
+		evlog, err := Run(lamport)
+		if err != nil {
+			panic(err)
+		}
+		PrintEvents(evlog, lamport)
+	}
 }
